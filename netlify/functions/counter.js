@@ -1,27 +1,28 @@
-﻿// netlify/functions/counter.js
-const fs = require('fs');
+﻿const fs = require('fs').promises;
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, '..', '..', 'counts.json');
+const TMP_PATH = '/tmp/counts.json';
 
 async function readCount() {
   try {
-    const raw = await fs.promises.readFile(DB_PATH, 'utf8');
-    const obj = JSON.parse(raw);
-    return Number(obj.count || 0);
-  } catch (e) {
-    return 0;
+    const raw = await fs.readFile(TMP_PATH, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    try {
+      const raw2 = await fs.readFile(path.join(__dirname, '..', '..', 'counts.json'), 'utf8');
+      return JSON.parse(raw2);
+    } catch (err2) {
+      return { count: 0 };
+    }
   }
 }
 
-exports.handler = async (event) => {
-  if (event.httpMethod !== 'GET') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+exports.handler = async function() {
+  try {
+    const data = await readCount();
+    return { statusCode: 200, body: JSON.stringify({ count: data.count || 0 }) };
+  } catch (err) {
+    console.error('counter read error', err);
+    return { statusCode: 500, body: JSON.stringify({ error: 'internal server error' }) };
   }
-  const count = await readCount();
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count })
-  };
 };
