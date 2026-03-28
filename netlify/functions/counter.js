@@ -1,28 +1,39 @@
-﻿const fs = require('fs').promises;
-const path = require('path');
+﻿// netlify/functions/counter.js
+const { createClient } = require('@supabase/supabase-js');
 
-const TMP_PATH = '/tmp/counts.json';
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-async function readCount() {
+exports.handler = async function (event, context) {
   try {
-    const raw = await fs.readFile(TMP_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch (err) {
-    try {
-      const raw2 = await fs.readFile(path.join(__dirname, '..', '..', 'counts.json'), 'utf8');
-      return JSON.parse(raw2);
-    } catch (err2) {
-      return { count: 0 };
+    // Assumiamo che la tabella si chiami "counters" con colonne { id, value }
+    // e che il record usato sia id = 'main'. Se la tua tabella/colonna ha nomi diversi,
+    // sostituisci 'counters' e 'value' con i nomi corretti.
+    const { data, error } = await supabase
+      .from('counters')
+      .select('value')
+      .eq('id', 'main')
+      .single();
+
+    if (error) {
+      console.error('Supabase read error', error);
+      return {
+        statusCode: 500,
+        body: JSON.stringify({ error: 'internal server error' }),
+      };
     }
-  }
-}
 
-exports.handler = async function() {
-  try {
-    const data = await readCount();
-    return { statusCode: 200, body: JSON.stringify({ count: data.count || 0 }) };
+    const count = (data && (data.value ?? data.count ?? 0)) || 0;
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ count }),
+      headers: { 'Content-Type': 'application/json' },
+    };
   } catch (err) {
     console.error('counter read error', err);
-    return { statusCode: 500, body: JSON.stringify({ error: 'internal server error' }) };
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: 'internal server error' }),
+    };
   }
 };
