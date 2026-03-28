@@ -1,39 +1,38 @@
-﻿// netlify/functions/counter.js
+﻿// netlify/functions/counter.js (temporaneo: logging esteso)
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 exports.handler = async function (event, context) {
   try {
-    // Assumiamo che la tabella si chiami "counters" con colonne { id, value }
-    // e che il record usato sia id = 'main'. Se la tua tabella/colonna ha nomi diversi,
-    // sostituisci 'counters' e 'value' con i nomi corretti.
+    console.log('counter invoked, env SUPABASE_URL present:', !!process.env.SUPABASE_URL);
     const { data, error } = await supabase
-      .from('counters')
-      .select('value')
+      .from('counters')      // verifica il nome reale della tabella
+      .select('value')       // verifica il nome reale della colonna
       .eq('id', 'main')
       .single();
 
     if (error) {
-      console.error('Supabase read error', error);
+      console.error('Supabase read error object:', error);
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: 'internal server error' }),
+        body: JSON.stringify({ error: 'supabase_read_error', details: error.message || error }),
       };
     }
 
+    console.log('Supabase read data:', data);
     const count = (data && (data.value ?? data.count ?? 0)) || 0;
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ count }),
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count }),
     };
   } catch (err) {
-    console.error('counter read error', err);
+    console.error('counter read exception:', err);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: 'internal server error' }),
+      body: JSON.stringify({ error: 'internal server error', details: String(err) }),
     };
   }
 };
