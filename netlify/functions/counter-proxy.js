@@ -1,79 +1,74 @@
 ﻿// netlify/functions/counter-proxy.js
 const { createClient } = require('@supabase/supabase-js');
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-function safeParseBody(raw) {
-  if (!raw) return {};
-  if (typeof raw === 'object') return raw;
-  let s = String(raw).trim();
+// Limiter in-memory temporaneo (non affidabile su più istanze)
+const RATE_WINDOW_MS = 60 * 1000; // 1 minuto
+const MAX_PER_WINDOW = 30;
+const ipBuckets = new Map();
 
-  // rimuovi apici singoli esterni: '...'
-  if (s.startsWith("'") && s.endsWith("'")) {
-    s = s.slice(1, -1);
+function tooManyRequests(ip) {
+  const now = Date.now();
+  const bucket = ipBuckets.get(ip) || { ts: now, count: 0 };
+  if (now - bucket.ts > RATE_WINDOW_MS) {
+    bucket.ts = now;
+    bucket.count = 0;
   }
-
-  // rimuovi apici doppi esterni: "{"inc":1}"
-  if (s.startsWith('"') && s.endsWith('"')) {
-    s = s.slice(1, -1);
-  }
-
-  // prova a sostituire apici singoli interni con doppi (fallback)
-  try {
-    return JSON.parse(s);
-  } catch (e1) {
-    try {
-      const replaced = s.replace(/'/g, '"');
-      return JSON.parse(replaced);
-    } catch (e2) {
-      // ultimo fallback: cerca pattern key:value semplice
-      return {};
-    }
-  }
+  bucket.count += 1;
+  ipBuckets.set(ip, bucket);
+  return bucket.count > MAX_PER_WINDOW;
 }
 
-exports.handler = async function(event) {
+exports.handler = async function (event, context) {
   try {
-    console.error('counter-proxy invoked');
-    console.error('event.body raw:', event.body);
+    if (event.httpMethod !== 'POST') {
+      return { statusCode: 405, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'method_not_allowed' }) };
+    }
 
-    const body = safeParseBody(event.body);
-    console.error('parsed body:', body);
+    const ip = (event.headers && (event.headers['x-forwarded-for'] || event.headers['x-nf-client-connection-ip'])) || 'unknown';
+    if (tooManyRequests(ip)) {
+      return { statusCode: 429, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'rate_limited' }) };
+    }
+
+    let body;
+    try {
+      body = JSON.parse(event.body || '{}');
+    } catch (e) {
+      return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_json' }) };
+    }
 
     const inc = Number(body.inc);
     if (!Number.isInteger(inc) || inc === 0) {
-      console.error('invalid inc:', body.inc);
-      return { statusCode: 400, body: JSON.stringify({ error: 'invalid inc' }) };
+      return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid inc' }) };
     }
 
+    // Chiamata RPC: increment_counter(p_id, p_inc)
     const { data, error } = await supabase.rpc('increment_counter', { p_id: 'main', p_inc: inc });
 
     if (error) {
-      console.error('supabase rpc error object:', error);
-      return { statusCode: 500, body: JSON.stringify({ error: 'supabase rpc error', detail: error.message || error }) };
+      return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'rpc_error', details: error.message || error }) };
     }
 
-    console.error('supabase rpc data:', data);
-
-    let newCount = null;
-    if (Array.isArray(data) && data.length && data[0].count !== undefined) {
-      newCount = Number(data[0].count);
-    } else if (data && data.count !== undefined) {
-      newCount = Number(data.count);
-    } else if (Array.isArray(data) && data.length && typeof data[0] === 'number') {
-      newCount = Number(data[0]);
+    // Estrai valore numerico dalla risposta RPC
+    let count = null;
+    if (data == null) {
+      count = null;
+    } else if (typeof data === 'number') {
+      count = data;
+    } else if (Array.isArray(data) && data.length > 0) {
+      const row = data[0];
+      count = typeof row.count === 'number' ? row.count : typeof row.value === 'number' ? row.value : null;
+    } else if (typeof data === 'object') {
+      count = typeof data.count === 'number' ? data.count : typeof data.value === 'number' ? data.value : null;
     }
 
-    if (newCount === null) {
-      console.error('unexpected rpc response shape', data);
-      return { statusCode: 500, body: JSON.stringify({ error: 'unexpected rpc response shape', data }) };
+    if (count === null) {
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count: data }) };
     }
 
-    return { statusCode: 200, body: JSON.stringify({ count: newCount }) };
+    return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count }) };
   } catch (err) {
-    console.error('counter-proxy caught err:', err);
-    return { statusCode: 500, body: JSON.stringify({ error: 'internal server error', message: err.message }) };
+    return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'internal server error', details: String(err) }) };
   }
 };
