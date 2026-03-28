@@ -1,27 +1,42 @@
-﻿// netlify/functions/counter.js (temporaneo: logging esteso)
+﻿// netlify/functions/counter.js
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+function extractCountFromRow(row) {
+  if (!row) return 0;
+  if (typeof row.value === 'number') return row.value;
+  if (typeof row.count === 'number') return row.count;
+  // cerca la prima proprietà numerica
+  for (const k of Object.keys(row)) {
+    if (typeof row[k] === 'number') return row[k];
+  }
+  return 0;
+}
+
 exports.handler = async function (event, context) {
   try {
-    console.log('counter invoked, env SUPABASE_URL present:', !!process.env.SUPABASE_URL);
-    const { data, error } = await supabase
-      .from('counters')      // verifica il nome reale della tabella
-      .select('value')       // verifica il nome reale della colonna
-      .eq('id', 'main')
-      .single();
+    console.log('counter invoked, SUPABASE_URL present:', !!process.env.SUPABASE_URL);
 
-    if (error) {
-      console.error('Supabase read error object:', error);
+    // Prima prova: colonne comuni
+    let res = await supabase.from('counters').select('value,count').eq('id', 'main').single();
+
+    if (res.error) {
+      // Se la prima query fallisce, prova a leggere tutto il record
+      console.warn('First select failed, trying select *', res.error.message || res.error);
+      res = await supabase.from('counters').select('*').eq('id', 'main').single();
+    }
+
+    if (res.error) {
+      console.error('Supabase read error object:', res.error);
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: 'supabase_read_error', details: error.message || error }),
+        body: JSON.stringify({ error: 'supabase_read_error', details: res.error.message || res.error }),
       };
     }
 
-    console.log('Supabase read data:', data);
-    const count = (data && (data.value ?? data.count ?? 0)) || 0;
+    console.log('Supabase read data:', res.data);
+    const count = extractCountFromRow(res.data);
 
     return {
       statusCode: 200,
